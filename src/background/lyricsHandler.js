@@ -1436,14 +1436,16 @@ function parseKPoeFormat(data) {
             // For v2, 'lyrics' array contains lines, and 'syllabus' contains words.
             // Times are already in milliseconds from the API.
             const parsedSyllabus = (item.main_lyric || []).map((syllable, index, array) => ({
-                text: syllable.text,
+                text: (index === array.length - 1 || syllable.is_part)
+                    ? syllable.text
+                    : `${syllable.text} `,
                 time: Number(syllable.timestamp) || 0,
                 duration: Number(syllable.duration) || 0,
                 isLineEnding: Boolean(index == array.length - 1),
                 isBackground: Boolean(item.background_lyric.length > 0),
                 element: {
                     key: `L${iii + 1}`,
-                    songPart: syllable.is_part,
+                    songPart: item.structure,
                     singer: item.is_duet ? "v2" : "v1",
                     isBackground: Boolean(item.background_lyric.length > 0)
                 }
