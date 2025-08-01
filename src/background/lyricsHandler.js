@@ -1063,43 +1063,134 @@ const KPOE_SERVERS = [
     "https://lyricsplus.prjktla.online"
 ];
 
+function calculateScore(track, query) {
+  let score = 0;
+  
+  const trackName = track.name.toLowerCase().trim();
+  const trackArtist = track.artistName.toLowerCase().trim();
+  const trackAlbum = (track.albumName || '').toLowerCase().trim();
+
+  const queryName = query.songName.toLowerCase().trim();
+  const queryArtist = query.artistName.toLowerCase().trim();
+  const queryAlbum = (query.albumName || '').toLowerCase().trim();
+
+  if (!trackName.includes(queryName) || !trackArtist.includes(queryArtist)) {
+    return 0;
+  }
+  
+  if (trackName === queryName) score += 10;
+  else score += 5;
+
+  if (trackArtist === queryArtist) score += 8;
+  else score += 4;
+
+  if (query.albumName && trackAlbum.includes(queryAlbum)) {
+    score += 5;
+  }
+  
+  if (query.duration) {
+    const durationInSeconds = track.durationInMillis / 1000;
+    const difference = Math.abs(durationInSeconds - query.duration);
+    if (difference <= 5) score += 3;
+  }
+  
+  const penaltyKeywords = ['remix', 'mixed', 'live', 'acoustic', 'extended', 'edit', 'version'];
+  if (penaltyKeywords.some(keyword => trackName.includes(keyword) && !queryName.includes(keyword))) {
+    score -= 4;
+  }
+
+  if (track.contentRating === 'explicit') {
+    score += 1;
+  }
+  
+  return score;
+}
+
+function findBestMatch(songList, query) {
+  if (!songList || !songList.results || !query.songName || !query.artistName) {
+    return null;
+  }
+
+  const scoredTracks = songList.results
+    .map(track => ({
+      track: track,
+      score: calculateScore(track, query)
+    }))
+    .filter(item => item.score > 0);
+
+  if (scoredTracks.length === 0) return null;
+
+  scoredTracks.sort((a, b) => b.score - a.score);
+  return scoredTracks[0].track;
+}
+
 async function fetchKPoeLyrics(songInfo, sourceOrder = '', forceReload = false) {
-    const albumParam = (songInfo.album)
-        ? `&album=${encodeURIComponent(songInfo.album)}`
-        : '';
-    const sourceParam = sourceOrder ? `&source=${encodeURIComponent(sourceOrder)}` : '';
-    let forceReloadParam = forceReload ? `&forceReload=true` : '';
-    let fetchOptions = {};
+    const albumParam = songInfo.album ? `&album=${encodeURIComponent(songInfo.album)}` : '';
+    const durationParam = songInfo.duration ? `&duration=${songInfo.duration}` : '';
+    const searchUrl = `https://api.paxsenix.biz.id/apple-music/search?q=${encodeURIComponent(songInfo.title + " " + songInfo.artist)}`;
+    
+    let fetchOptions = forceReload ? { cache: 'no-store' } : {};
+    let searchData;
 
-    if (forceReload) {
-        fetchOptions = { cache: 'no-store' };
-        forceReloadParam = `&forceReload=true`;
-    }
-
-    for (const baseUrl of KPOE_SERVERS) {
-        const url = `${baseUrl}/v2/lyrics/get?title=${encodeURIComponent(songInfo.title)}&artist=${encodeURIComponent(songInfo.artist)}${albumParam}&duration=${songInfo.duration}${sourceParam}${forceReloadParam}`;
-        try {
-            const response = await fetch(url, fetchOptions);
-            if (response.ok) {
-                const data = await response.json();
-                // Modify source metadata to indicate which server provided the lyrics
-                if (data && data.metadata) {
-                    data.metadata.source = `${data.metadata.source}`;
-                }
-                return parseKPoeFormat(data);
-            } else if (response.status === 404 || response.status === 403) {
-                // If 404 or 403, it means lyrics are not found/forbidden, not a server issue.
-                // So, we should not try other mirrors for this specific lyric.
-                console.warn(`Lyrics not found or forbidden from KPoe server ${baseUrl}: ${response.status} ${response.statusText}`);
-                return null;
-            } else {
-                console.warn(`Failed to fetch from KPoe server ${baseUrl}: ${response.status} ${response.statusText}`);
-            }
-        } catch (error) {
-            console.error(`Network error fetching from KPoe server ${baseUrl}:`, error);
+    try {
+        console.log(`Searching for song with URL: ${searchUrl}`);
+        const searchResponse = await fetch(searchUrl, fetchOptions);
+        if (!searchResponse.ok) {
+            console.error(`Failed to search for song: ${searchResponse.status} ${searchResponse.statusText}`);
+            return null;
         }
+        searchData = await searchResponse.json();
+    } catch (error) {
+        console.error(`Network error during song search:`, error);
+        return null;
     }
-    return null; // Return null if all servers fail or lyrics not found/forbidden from any
+    
+    const query = {
+        songName: songInfo.title,
+        artistName: songInfo.artist,
+        albumName: songInfo.album,
+        duration: songInfo.duration
+    };
+
+    const bestMatch = findBestMatch(searchData, query);
+
+    if (!bestMatch) {
+        console.warn(`No suitable match found for "${songInfo.title}" by "${songInfo.artist}"`);
+        return null;
+    }
+    
+    const trackId = bestMatch.playParams?.id;
+    if (!trackId) {
+        console.error("Found a best match, but it's missing a track ID.", bestMatch);
+        return null;
+    }
+
+    console.log(`Best match found: "${bestMatch.name}" by ${bestMatch.artistName} (ID: ${trackId})`);
+
+    const lyricsUrl = `https://a.paxsenix.dpdns.org/lyrics/${trackId}`;
+    
+    try {
+        console.log(`Fetching lyrics from: ${lyricsUrl}`);
+        const lyricsResponse = await fetch(lyricsUrl, fetchOptions);
+
+        if (lyricsResponse.ok) {
+            const lyricsData = await lyricsResponse.json();
+            if (lyricsData && lyricsData.metadata) {
+                lyricsData.metadata.source = `Apple Music`;
+            }
+
+            return parseKPoeFormat(lyricsData); 
+        } else if (lyricsResponse.status === 404 || lyricsResponse.status === 403) {
+            console.warn(`Lyrics not found or forbidden for track ID ${trackId}: ${lyricsResponse.status}`);
+            return null;
+        } else {
+            console.warn(`Failed to fetch lyrics from ${lyricsBaseUrl}: ${lyricsResponse.status} ${lyricsResponse.statusText}`);
+            return null;
+        }
+    } catch (error) {
+        console.error(`Network error fetching lyrics from ${lyricsBaseUrl}:`, error);
+        return null;
+    }
 }
 
 async function fetchCustomKPoeLyrics(songInfo, customUrl, sourceOrder = '', forceReload = false) {
@@ -1333,34 +1424,41 @@ function parseKPoeFormat(data) {
     // Clone metadata to avoid mutation.
     const metadata = {
         ...data.metadata,
-        source: `${data.metadata.source} (KPoe)`
+        source: `${data.metadata.source} (PaxSenixAPI)`
     };
 
     return {
-        type: data.type, // This will be "Word" or "Line"
+        type: data.timing_mode, // This will be "Word" or "Line"
         data: data.lyrics.map(item => {
-            const startTime = Number(item.time) || 0;
+            const startTime = Number(item.timestamp) || 0;
             const duration = Number(item.duration) || 0;
             const endTime = startTime + duration;
 
             // For v2, 'lyrics' array contains lines, and 'syllabus' contains words.
             // Times are already in milliseconds from the API.
-            const parsedSyllabus = (item.syllabus || []).map(syllable => ({
+            const parsedSyllabus = (item.main_lyrics || []).map((syllable, index, array) => ({
                 text: syllable.text || '',
-                time: Number(syllable.time) || 0,
+                time: Number(syllable.timestamp) || 0,
                 duration: Number(syllable.duration) || 0,
-                isLineEnding: Boolean(syllable.isLineEnding),
-                isBackground: Boolean(syllable.isBackground), // Add this line
-                element: syllable.element || {}
+                isLineEnding: Boolean(index == array.length - 1),
+                isBackground: Boolean(syllable.background_lyric.length > 0),
+                element: {
+                    key: "",
+                    songPart: syllable.is_part,
+                    singer: item.is_duet ? "v2" : "v1"
+                }
             }));
 
             return {
-                text: item.text || '', // Full line text
+                text: item.main_lyric.map((no) => no.is_part ? no.text : (no.text + " ")).join('').trim(), // Full line text
                 startTime: startTime / 1000, // Convert to seconds
                 duration: duration / 1000, // Convert to seconds
                 endTime: endTime / 1000, // Convert to seconds
                 syllabus: parsedSyllabus, // Word-by-word breakdown
-                element: item.element || {}
+                element: {
+                    key: "",
+                    singer: item.is_duet ? "v2" : "v1"
+                }
             };
         }),
         metadata
