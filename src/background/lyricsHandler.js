@@ -1436,7 +1436,7 @@ function parseKPoeFormat(data) {
 
             // For v2, 'lyrics' array contains lines, and 'syllabus' contains words.
             // Times are already in milliseconds from the API.
-            const parsedSyllabus = (item.main_lyrics || []).map((syllable, index, array) => ({
+            const parsedSyllabus = (item.main_lyric || []).map((syllable, index, array) => ({
                 text: syllable.text || '',
                 time: Number(syllable.timestamp) || 0,
                 duration: Number(syllable.duration) || 0,
