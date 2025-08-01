@@ -1175,9 +1175,6 @@ async function fetchKPoeLyrics(songInfo, sourceOrder = '', forceReload = false) 
 
         if (lyricsResponse.ok) {
             const lyricsData = await lyricsResponse.json();
-            if (lyricsData && lyricsData.metadata) {
-                lyricsData.metadata.source = `Apple Music`;
-            }
 
             return parseKPoeFormat(lyricsData); 
         } else if (lyricsResponse.status === 404 || lyricsResponse.status === 403) {
@@ -1424,12 +1421,14 @@ function parseKPoeFormat(data) {
     // Clone metadata to avoid mutation.
     const metadata = {
         ...data.metadata,
-        source: `${data.metadata.source} (PaxSenixAPI)`
+        source: `Apple Music (PaxSenixAPI)`
     };
+
+    console.log(data);
 
     return {
         type: data.timing_mode, // This will be "Word" or "Line"
-        data: data.lyrics.map(item => {
+        data: data.lyrics.map((item, iii) => {
             const startTime = Number(item.timestamp) || 0;
             const duration = Number(item.duration) || 0;
             const endTime = startTime + duration;
@@ -1437,17 +1436,20 @@ function parseKPoeFormat(data) {
             // For v2, 'lyrics' array contains lines, and 'syllabus' contains words.
             // Times are already in milliseconds from the API.
             const parsedSyllabus = (item.main_lyric || []).map((syllable, index, array) => ({
-                text: syllable.text || '',
+                text: syllable.text,
                 time: Number(syllable.timestamp) || 0,
                 duration: Number(syllable.duration) || 0,
                 isLineEnding: Boolean(index == array.length - 1),
-                isBackground: Boolean(syllable.background_lyric.length > 0),
+                isBackground: Boolean(item.background_lyric.length > 0),
                 element: {
-                    key: "",
+                    key: `L${iii + 1}`,
                     songPart: syllable.is_part,
-                    singer: item.is_duet ? "v2" : "v1"
+                    singer: item.is_duet ? "v2" : "v1",
+                    isBackground: Boolean(item.background_lyric.length > 0)
                 }
             }));
+
+            console.info(parsedSyllabus);
 
             return {
                 text: item.main_lyric.map((no) => no.is_part ? no.text : (no.text + " ")).join('').trim(), // Full line text
@@ -1456,7 +1458,6 @@ function parseKPoeFormat(data) {
                 endTime: endTime / 1000, // Convert to seconds
                 syllabus: parsedSyllabus, // Word-by-word breakdown
                 element: {
-                    key: "",
                     singer: item.is_duet ? "v2" : "v1"
                 }
             };
